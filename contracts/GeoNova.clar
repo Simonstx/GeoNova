@@ -1,5 +1,5 @@
-;; GeoNova - Location-Based NFT Minting Contract with Dynamic Pricing
-;; Allows users to mint NFTs tied to real-world locations with variable pricing
+;; GeoNova - Location-Based NFT Minting Contract with Dynamic Pricing and Multi-Signature Governance
+;; Allows users to mint NFTs tied to real-world locations with variable pricing and community governance
 
 ;; Constants
 (define-constant contract-owner tx-sender)
@@ -13,11 +13,20 @@
 (define-constant err-insufficient-payment (err u107))
 (define-constant err-invalid-pricing (err u108))
 (define-constant err-transfer-failed (err u109))
+(define-constant err-proposal-not-found (err u110))
+(define-constant err-proposal-already-signed (err u111))
+(define-constant err-proposal-not-approved (err u112))
+(define-constant err-proposal-already-executed (err u113))
+(define-constant err-invalid-threshold (err u114))
+(define-constant err-signer-already-exists (err u115))
+(define-constant err-signer-not-found (err u116))
 
 ;; Data Variables
 (define-data-var last-token-id uint u0)
+(define-data-var last-proposal-id uint u0)
 (define-data-var global-mint-cooldown uint u3600) ;; 1 hour in seconds
 (define-data-var base-mint-price uint u1000000) ;; 1 STX in microSTX
+(define-data-var signature-threshold uint u1) ;; Default single signature required
 
 ;; Data Maps
 (define-map mintable-zones
@@ -73,6 +82,37 @@
 (define-map zone-user-mints
   { zone-id: uint, user: principal }
   { minted: bool }
+)
+
+;; Multi-signature governance maps
+(define-map authorized-signers
+  { signer: principal }
+  { active: bool }
+)
+
+(define-map zone-proposals
+  { proposal-id: uint }
+  {
+    zone-id: uint,
+    name: (string-ascii 64),
+    latitude: int,
+    longitude: int,
+    radius: uint,
+    max-mints: uint,
+    base-price: uint,
+    popularity-multiplier: uint,
+    time-based-pricing: bool,
+    special-event-multiplier: uint,
+    signatures-count: uint,
+    executed: bool,
+    proposer: principal,
+    created-at: uint
+  }
+)
+
+(define-map proposal-signatures
+  { proposal-id: uint, signer: principal }
+  { signed: bool }
 )
 
 ;; Private Functions
@@ -156,6 +196,266 @@
   )
 )
 
+(define-private (is-authorized-signer-internal (signer principal))
+  (match (map-get? authorized-signers { signer: signer })
+    signer-data (get active signer-data)
+    false
+  )
+)
+
+(define-private (validate-zone-proposal-params 
+  (zone-id uint)
+  (name (string-ascii 64))
+  (latitude int)
+  (longitude int)
+  (radius uint)
+  (max-mints uint)
+  (base-price uint)
+  (popularity-multiplier uint)
+  (special-event-multiplier uint))
+  (and
+    (> zone-id u0)
+    (> (len name) u0)
+    (<= (len name) u64)
+    (validate-coordinates latitude longitude)
+    (> radius u0)
+    (<= radius u100000) ;; Max 100km radius
+    (> max-mints u0)
+    (<= max-mints u1000000) ;; Max 1M mints
+    (> base-price u0)
+    (<= base-price u1000000000000) ;; Max 1M STX
+    (> popularity-multiplier u0)
+    (<= popularity-multiplier u1000) ;; Max 10x multiplier
+    (> special-event-multiplier u0)
+    (<= special-event-multiplier u1000) ;; Max 10x multiplier
+  )
+)
+
+(define-private (increment-proposal-id)
+  (let ((current-id (var-get last-proposal-id)))
+    (var-set last-proposal-id (+ current-id u1))
+    (+ current-id u1)
+  )
+)
+
+;; Multi-signature governance functions
+
+;; Add authorized signer (owner only)
+(define-public (add-authorized-signer (signer principal))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (not (is-eq signer contract-owner)) err-invalid-coordinates) ;; Owner is implicitly authorized
+    (asserts! (is-none (map-get? authorized-signers { signer: signer })) err-signer-already-exists)
+    (ok (map-set authorized-signers
+      { signer: signer }
+      { active: true }
+    ))
+  )
+)
+
+;; Remove authorized signer (owner only)
+(define-public (remove-authorized-signer (signer principal))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (not (is-eq signer contract-owner)) err-invalid-coordinates) ;; Cannot remove owner
+    (asserts! (is-some (map-get? authorized-signers { signer: signer })) err-signer-not-found)
+    (ok (map-set authorized-signers
+      { signer: signer }
+      { active: false }
+    ))
+  )
+)
+
+;; Set signature threshold (owner only)
+(define-public (set-signature-threshold (threshold uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (asserts! (> threshold u0) err-invalid-threshold)
+    (asserts! (<= threshold u10) err-invalid-threshold) ;; Max 10 signers
+    (ok (var-set signature-threshold threshold))
+  )
+)
+
+;; Create zone proposal with auto-increment ID (authorized signers or owner)
+(define-public (create-zone-proposal
+  (zone-id uint)
+  (name (string-ascii 64))
+  (latitude int)
+  (longitude int)
+  (radius uint)
+  (max-mints uint)
+  (base-price uint)
+  (popularity-multiplier uint)
+  (enable-time-pricing bool)
+  (special-event-multiplier uint))
+  (let ((proposal-id (increment-proposal-id)))
+    (begin
+      (asserts! 
+        (or (is-eq tx-sender contract-owner) (is-authorized-signer-internal tx-sender))
+        err-unauthorized
+      )
+      (asserts! (is-none (map-get? mintable-zones { zone-id: zone-id })) err-already-minted)
+      (asserts! 
+        (validate-zone-proposal-params 
+          zone-id name latitude longitude radius max-mints 
+          base-price popularity-multiplier special-event-multiplier)
+        err-invalid-coordinates
+      )
+      
+      (map-set zone-proposals
+        { proposal-id: proposal-id }
+        {
+          zone-id: zone-id,
+          name: name,
+          latitude: latitude,
+          longitude: longitude,
+          radius: radius,
+          max-mints: max-mints,
+          base-price: base-price,
+          popularity-multiplier: popularity-multiplier,
+          time-based-pricing: enable-time-pricing,
+          special-event-multiplier: special-event-multiplier,
+          signatures-count: u0,
+          executed: false,
+          proposer: tx-sender,
+          created-at: stacks-block-height
+        }
+      )
+      (ok proposal-id)
+    )
+  )
+)
+
+;; Propose zone creation with manual proposal ID (authorized signers or owner)
+(define-public (propose-zone-creation
+  (proposal-id uint)
+  (zone-id uint)
+  (name (string-ascii 64))
+  (latitude int)
+  (longitude int)
+  (radius uint)
+  (max-mints uint)
+  (base-price uint)
+  (popularity-multiplier uint)
+  (enable-time-pricing bool)
+  (special-event-multiplier uint))
+  (begin
+    (asserts! 
+      (or (is-eq tx-sender contract-owner) (is-authorized-signer-internal tx-sender))
+      err-unauthorized
+    )
+    (asserts! (> proposal-id u0) err-invalid-coordinates)
+    (asserts! (is-none (map-get? zone-proposals { proposal-id: proposal-id })) err-already-minted)
+    (asserts! (is-none (map-get? mintable-zones { zone-id: zone-id })) err-already-minted)
+    (asserts! 
+      (validate-zone-proposal-params 
+        zone-id name latitude longitude radius max-mints 
+        base-price popularity-multiplier special-event-multiplier)
+      err-invalid-coordinates
+    )
+    
+    (ok (map-set zone-proposals
+      { proposal-id: proposal-id }
+      {
+        zone-id: zone-id,
+        name: name,
+        latitude: latitude,
+        longitude: longitude,
+        radius: radius,
+        max-mints: max-mints,
+        base-price: base-price,
+        popularity-multiplier: popularity-multiplier,
+        time-based-pricing: enable-time-pricing,
+        special-event-multiplier: special-event-multiplier,
+        signatures-count: u0,
+        executed: false,
+        proposer: tx-sender,
+        created-at: stacks-block-height
+      }
+    ))
+  )
+)
+
+;; Sign zone proposal (authorized signers or owner)
+(define-public (sign-zone-proposal (proposal-id uint))
+  (begin
+    (asserts! 
+      (or (is-eq tx-sender contract-owner) (is-authorized-signer-internal tx-sender))
+      err-unauthorized
+    )
+    (asserts! (> proposal-id u0) err-invalid-coordinates)
+    (match (map-get? zone-proposals { proposal-id: proposal-id })
+      proposal-data
+      (begin
+        (asserts! (not (get executed proposal-data)) err-proposal-already-executed)
+        (asserts! 
+          (is-none (map-get? proposal-signatures { proposal-id: proposal-id, signer: tx-sender }))
+          err-proposal-already-signed
+        )
+        
+        ;; Record signature
+        (map-set proposal-signatures
+          { proposal-id: proposal-id, signer: tx-sender }
+          { signed: true }
+        )
+        
+        ;; Update signature count
+        (ok (map-set zone-proposals
+          { proposal-id: proposal-id }
+          (merge proposal-data { signatures-count: (+ (get signatures-count proposal-data) u1) })
+        ))
+      )
+      err-proposal-not-found
+    )
+  )
+)
+
+;; Execute approved zone proposal (anyone can trigger)
+(define-public (execute-zone-proposal (proposal-id uint))
+  (begin
+    (asserts! (> proposal-id u0) err-invalid-coordinates)
+    (match (map-get? zone-proposals { proposal-id: proposal-id })
+      proposal-data
+      (begin
+        (asserts! (not (get executed proposal-data)) err-proposal-already-executed)
+        (asserts! 
+          (>= (get signatures-count proposal-data) (var-get signature-threshold))
+          err-proposal-not-approved
+        )
+        (asserts! 
+          (is-none (map-get? mintable-zones { zone-id: (get zone-id proposal-data) }))
+          err-already-minted
+        )
+        
+        ;; Create the zone
+        (map-set mintable-zones
+          { zone-id: (get zone-id proposal-data) }
+          {
+            name: (get name proposal-data),
+            latitude: (get latitude proposal-data),
+            longitude: (get longitude proposal-data),
+            radius: (get radius proposal-data),
+            active: true,
+            max-mints: (get max-mints proposal-data),
+            current-mints: u0,
+            base-price: (get base-price proposal-data),
+            popularity-multiplier: (get popularity-multiplier proposal-data),
+            time-based-pricing: (get time-based-pricing proposal-data),
+            special-event-multiplier: (get special-event-multiplier proposal-data)
+          }
+        )
+        
+        ;; Mark proposal as executed
+        (ok (map-set zone-proposals
+          { proposal-id: proposal-id }
+          (merge proposal-data { executed: true })
+        ))
+      )
+      err-proposal-not-found
+    )
+  )
+)
+
 ;; Public Functions
 
 ;; Add a new mintable zone with pricing parameters (owner only)
@@ -172,14 +472,12 @@
   (special-event-multiplier uint))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (asserts! (> zone-id u0) err-invalid-coordinates)
-    (asserts! (> (len name) u0) err-invalid-coordinates)
-    (asserts! (> radius u0) err-invalid-coordinates)
-    (asserts! (> max-mints u0) err-invalid-coordinates)
-    (asserts! (> base-price u0) err-invalid-pricing)
-    (asserts! (> popularity-multiplier u0) err-invalid-pricing)
-    (asserts! (> special-event-multiplier u0) err-invalid-pricing)
-    (asserts! (validate-coordinates latitude longitude) err-invalid-coordinates)
+    (asserts! 
+      (validate-zone-proposal-params 
+        zone-id name latitude longitude radius max-mints 
+        base-price popularity-multiplier special-event-multiplier)
+      err-invalid-coordinates
+    )
     (asserts! (is-none (map-get? mintable-zones { zone-id: zone-id })) err-already-minted)
     (ok (map-set mintable-zones
       { zone-id: zone-id }
@@ -291,6 +589,7 @@
   )
     (asserts! (> zone-id u0) err-invalid-coordinates)
     (asserts! (> (len metadata-uri) u0) err-invalid-coordinates)
+    (asserts! (<= (len metadata-uri) u256) err-invalid-coordinates)
     (asserts! (validate-coordinates user-latitude user-longitude) err-invalid-coordinates)
     (asserts! (check-cooldown tx-sender) err-cooldown-active)
     (asserts! (> mint-price u0) err-invalid-pricing)
@@ -354,7 +653,7 @@
             (ok token-id)
           )
           transfer-error
-          (err transfer-error)
+          err-transfer-failed
         )
       )
       err-not-found
@@ -457,4 +756,78 @@
 ;; Get base mint price
 (define-read-only (get-base-mint-price)
   (var-get base-mint-price)
+)
+
+;; Multi-signature governance read-only functions
+
+;; Check if principal is authorized signer
+(define-read-only (is-authorized-signer (signer principal))
+  (is-authorized-signer-internal signer)
+)
+
+;; Get signature threshold
+(define-read-only (get-signature-threshold)
+  (var-get signature-threshold)
+)
+
+;; Get zone proposal details
+(define-read-only (get-zone-proposal (proposal-id uint))
+  (begin
+    (asserts! (> proposal-id u0) (err u999))
+    (ok (map-get? zone-proposals { proposal-id: proposal-id }))
+  )
+)
+
+;; Check if signer has signed proposal
+(define-read-only (has-signed-proposal (proposal-id uint) (signer principal))
+  (begin
+    (asserts! (> proposal-id u0) (err u999))
+    (ok (is-some (map-get? proposal-signatures { proposal-id: proposal-id, signer: signer })))
+  )
+)
+
+;; Get last proposal ID
+(define-read-only (get-last-proposal-id)
+  (var-get last-proposal-id)
+)
+
+;; Get authorized signer status
+(define-read-only (get-signer-status (signer principal))
+  (map-get? authorized-signers { signer: signer })
+)
+
+;; Check if proposal meets signature threshold
+(define-read-only (is-proposal-approved (proposal-id uint))
+  (begin
+    (asserts! (> proposal-id u0) (err u999))
+    (match (map-get? zone-proposals { proposal-id: proposal-id })
+      proposal-data
+      (ok (>= (get signatures-count proposal-data) (var-get signature-threshold)))
+      (ok false)
+    )
+  )
+)
+
+;; Get proposal execution status
+(define-read-only (is-proposal-executed (proposal-id uint))
+  (begin
+    (asserts! (> proposal-id u0) (err u999))
+    (match (map-get? zone-proposals { proposal-id: proposal-id })
+      proposal-data
+      (ok (get executed proposal-data))
+      (ok false)
+    )
+  )
+)
+
+;; Contract information helper
+(define-read-only (get-contract-info)
+  {
+    owner: contract-owner,
+    last-token-id: (var-get last-token-id),
+    last-proposal-id: (var-get last-proposal-id),
+    signature-threshold: (var-get signature-threshold),
+    global-mint-cooldown: (var-get global-mint-cooldown),
+    base-mint-price: (var-get base-mint-price)
+  }
 )

@@ -1,21 +1,37 @@
 # GeoNova 🌍
 
-**Mint Location-Based NFTs in Real-Time with Dynamic Pricing**
+**Mint Location-Based NFTs in Real-Time with Dynamic Pricing & Multi-Signature Governance**
 
-GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-world locations and timestamps, creating unique digital collectibles for tourism, conferences, art installations, and event memorabilia. Now featuring dynamic pricing based on zone popularity, time of day, and special events.
+GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-world locations and timestamps, creating unique digital collectibles for tourism, conferences, art installations, and event memorabilia. Now featuring dynamic pricing based on zone popularity, time of day, special events, and multi-signature governance for collaborative zone management.
 
 ## 🚀 Features
 
 - **GPS-based NFT Minting**: Mint NFTs only when physically present at specific locations
 - **Dynamic Pricing System**: Variable minting costs based on popularity, time, and events
+- **Multi-Signature Zone Creation**: Community governance and partnership support for zone management
 - **Real-time Verification**: Location and timestamp verification for authentic collectibles
-- **Zone Management**: Configurable mintable zones with custom parameters
+- **Zone Management**: Configurable mintable zones with custom parameters and collaborative oversight
 - **Cooldown Protection**: Anti-spam mechanisms with configurable mint cooldowns
 - **Limited Editions**: Restricted minting per zone for true scarcity
 - **One Per User Per Zone**: Each user can mint only once per location zone
 - **Popularity-Based Pricing**: Higher prices for popular zones, incentivizing exploration
 - **Time-Based Pricing**: Premium hours command higher prices
 - **Special Event Multipliers**: Dynamic pricing for special occasions
+
+## 🤝 Multi-Signature Governance Features
+
+### Multi-Sig Zone Creation
+- **Partnership Support**: Multiple organizations can collaborate on zone creation
+- **Community Governance**: Decentralized decision-making for high-value locations
+- **Signature Requirements**: Configurable signature thresholds for zone approval
+- **Proposal System**: Submit zone proposals requiring multiple approvals
+- **Transparency**: All signatures and proposals are recorded on-chain
+
+### Governance Benefits
+- **Shared Ownership**: Multiple parties can co-manage premium locations
+- **Risk Distribution**: Distributed responsibility for zone management decisions
+- **Community Trust**: Democratic approval process for new zones
+- **Partnership Opportunities**: Enable collaborations between tourism boards, event organizers, and businesses
 
 ## 💰 Dynamic Pricing Features
 
@@ -40,8 +56,18 @@ GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-
 - **Testing**: Clarinet test suite
 - **Deployment**: Stacks Mainnet/Testnet
 - **Payment**: STX token integration
+- **Governance**: Multi-signature proposal system
 
 ## 📋 Smart Contract Functions
+
+### Multi-Signature Functions
+- `add-authorized-signer`: Add authorized signers for multi-sig operations (owner only)
+- `remove-authorized-signer`: Remove authorized signers (owner only)
+- `set-signature-threshold`: Configure required signature count (owner only)
+- `propose-zone-creation`: Submit zone creation proposal requiring multi-sig approval
+- `sign-zone-proposal`: Sign a pending zone proposal (authorized signers only)
+- `execute-zone-proposal`: Execute approved zone proposal (anyone can trigger)
+- `get-zone-proposal`: Retrieve proposal details and signature status
 
 ### Public Functions
 - `add-mintable-zone`: Create new mintable locations with pricing parameters (owner only)
@@ -61,6 +87,8 @@ GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-
 - `get-nft-info`: Get NFT metadata, location data, and mint price
 - `can-user-mint`: Check if user can mint (cooldown status)
 - `has-user-minted-in-zone`: Verify user mint status per zone
+- `is-authorized-signer`: Check if principal is authorized signer
+- `get-signature-threshold`: Get required signature count
 
 ## 🏗 Installation & Setup
 
@@ -87,9 +115,22 @@ GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-
 
 ## 📍 Usage Examples
 
-### Adding a Mintable Zone with Dynamic Pricing
+### Setting Up Multi-Signature Governance
 ```clarity
-(contract-call? .geonova add-mintable-zone 
+;; Add authorized signers (owner only)
+(contract-call? .geonova add-authorized-signer 'SP1ABC...)
+(contract-call? .geonova add-authorized-signer 'SP2DEF...)
+(contract-call? .geonova add-authorized-signer 'SP3GHI...)
+
+;; Set signature threshold (require 2 out of 3 signatures)
+(contract-call? .geonova set-signature-threshold u2)
+```
+
+### Creating Zone Proposal (Multi-Sig Process)
+```clarity
+;; Step 1: Submit zone proposal
+(contract-call? .geonova propose-zone-creation
+  u1                    ;; proposal-id
   u1                    ;; zone-id
   "Times Square NYC"    ;; name
   404852000             ;; latitude * 10^7
@@ -99,6 +140,29 @@ GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-
   u1000000              ;; base price (1 STX)
   u150                  ;; popularity multiplier (1.5x)
   true                  ;; enable-time-pricing
+  u100                  ;; special event multiplier (1.0x default)
+)
+
+;; Step 2: Authorized signers approve proposal
+(contract-call? .geonova sign-zone-proposal u1) ;; First signer
+(contract-call? .geonova sign-zone-proposal u1) ;; Second signer
+
+;; Step 3: Execute approved proposal (anyone can trigger)
+(contract-call? .geonova execute-zone-proposal u1)
+```
+
+### Adding a Mintable Zone (Traditional Owner-Only Method)
+```clarity
+(contract-call? .geonova add-mintable-zone 
+  u1                    ;; zone-id
+  "Central Park NYC"    ;; name
+  407829000             ;; latitude * 10^7
+  -739447000            ;; longitude * 10^7
+  u200                  ;; 200 meter radius
+  u500                  ;; max 500 mints
+  u2000000              ;; base price (2 STX)
+  u120                  ;; popularity multiplier (1.2x)
+  false                 ;; disable time-pricing
   u100                  ;; special event multiplier (1.0x default)
 )
 ```
@@ -137,6 +201,11 @@ GeoNova is a revolutionary platform that allows users to mint NFTs tied to real-
 )
 ```
 
+### Checking Proposal Status
+```clarity
+(contract-call? .geonova get-zone-proposal u1)
+```
+
 ### Checking Current Price
 ```clarity
 (contract-call? .geonova get-current-mint-price u1)
@@ -159,36 +228,47 @@ Final Price = Base Price × (Popularity Multiplier × Time Multiplier × Event M
 ## 🔒 Security Features
 
 - **Coordinate Validation**: Ensures valid GPS coordinates
-- **Access Control**: Owner-only administrative functions
+- **Access Control**: Owner-only administrative functions with multi-sig governance option
+- **Multi-Signature Security**: Prevents single point of failure for critical zone creation
+- **Signature Verification**: Cryptographic proof of approvals from authorized signers
 - **Cooldown Protection**: Prevents spam minting
 - **Zone Verification**: Confirms user location within zone radius
 - **Duplicate Prevention**: One mint per user per zone
 - **Payment Security**: STX transfer validation and error handling
-- **Input Validation**: Comprehensive parameter checking for all pricing inputs
+- **Input Validation**: Comprehensive parameter checking for all pricing and governance inputs
 
 ## 🎯 Use Cases
 
+### Traditional Use Cases
 - **Tourism**: Collect NFTs from famous landmarks with premium pricing
 - **Conferences**: Event attendance verification with time-sensitive pricing
 - **Art Installations**: Location-specific art pieces with dynamic valuation
 - **Gaming**: Real-world treasure hunts with escalating rewards
 - **Marketing**: Location-based promotional campaigns with surge pricing
-- **Peak Hour Events**: Higher prices during busy periods
-- **Discovery Incentives**: Lower prices for off-the-beaten-path locations
+
+### Multi-Sig Governance Use Cases
+- **Tourism Partnerships**: Tourism boards and local businesses collaborate on landmark zones
+- **Conference Consortiums**: Multiple event organizers jointly manage conference districts
+- **Art Collectives**: Artist groups and galleries co-create installation zones
+- **Municipal Partnerships**: City governments and business districts jointly manage zones
+- **Brand Collaborations**: Multiple brands coordinate marketing campaigns in shared zones
 
 ## 📈 Contract Architecture
 
-The contract uses efficient data structures with enhanced pricing capabilities:
+The contract uses efficient data structures with enhanced pricing and governance capabilities:
 - `mintable-zones`: Zone configuration including pricing parameters
 - `zone-pricing-tiers`: Popularity-based pricing tiers
 - `time-based-pricing`: Hourly pricing multipliers
 - `location-nfts`: NFT ownership, metadata, and mint price records
-- `user-last-mint`: Cooldown tracking
+- `user-last-mint-time`: Cooldown tracking
 - `zone-user-mints`: Per-zone minting records
+- `authorized-signers`: Multi-signature governance participants
+- `zone-proposals`: Pending zone creation proposals
+- `proposal-signatures`: Signature tracking for proposals
 
 ## 🧪 Testing
 
-Run the test suite to verify all functionality including pricing calculations:
+Run the test suite to verify all functionality including pricing calculations and multi-sig governance:
 ```bash
 clarinet test tests/geonova_test.ts
 ```
@@ -200,18 +280,6 @@ Deploy to Stacks testnet:
 clarinet deploy --testnet
 ```
 
-## 📄 License
-
-MIT License - see LICENSE file for details
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
 ---
 
 # GeoNova Future Feature Roadmap 🚀
@@ -219,7 +287,7 @@ MIT License - see LICENSE file for details
 ## 1. ✅ **Dynamic Pricing Zones** (IMPLEMENTED)
 Variable minting costs based on zone popularity, time of day, or special events. Premium locations command higher prices while incentivizing discovery of lesser-known areas.
 
-## 2. **Multi-Signature Zone Creation**
+## 2. ✅ **Multi-Signature Zone Creation** (IMPLEMENTED)
 Add multi-sig functionality for zone creation, allowing community governance or partnerships between organizations to collaboratively manage high-value locations.
 
 ## 3. **Time-Based Zone Activation**
